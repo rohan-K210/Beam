@@ -1,0 +1,36 @@
+# coturn TURN server for Beam.
+#
+#   cp .env.example .env
+#   docker compose up -d
+#
+# The defaults (127.0.0.1, chat/chatpass, relay ports 49160-49200) match
+# client/js/config.js and work for tabs on the same machine.
+#
+# For peers on other networks:
+#   - set TURN_EXTERNAL_IP in .env to your public IPv4 address
+#   - allow TCP/UDP 3478 and UDP 49160-49200 through the firewall
+#   - change the TURN URL in client/js/config.js to turn:YOUR_IP:3478
+#   - use the same username/password in both places
+
+services:
+  coturn:
+    image: coturn/coturn:latest
+    container_name: beam-coturn
+    restart: unless-stopped
+    command:
+      - "-n"
+      - "--log-file=stdout"
+      - "--fingerprint"
+      - "--lt-cred-mech"
+      - "--no-cli"
+      - "--no-multicast-peers"
+      - "--realm=beam"
+      - "--listening-port=3478"
+      - "--min-port=49160"
+      - "--max-port=49200"
+      - "--user=${TURN_USER:-chat}:${TURN_PASS:-chatpass}"
+      - "--external-ip=${TURN_EXTERNAL_IP:-127.0.0.1}"
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+      - "49160-49200:49160-49200/udp"
