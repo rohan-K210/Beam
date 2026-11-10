@@ -2,6 +2,7 @@
 let signalingState = 'disconnected';
 let roomActive = false;
 let signalingDetail = '';
+let signalingAttempt = 0;
 let myPeerId = null;
 let roomLimit = 0;
 
@@ -84,8 +85,6 @@ const sessions = new Map();
   const factRoute = $('fact-route');
   const factSignaling = $('fact-signaling');
   const factIce = $('fact-ice');
-  const bannerEl = $('signal-banner');
-  const bannerText = $('signal-banner-text');
   const messagesEl = $('messages');
   const transfersEl = $('transfers');
   const emptyState = $('empty-state');
@@ -154,7 +153,6 @@ const sessions = new Map();
     ui.hideJoinForm();
     ui.resetConversation();
     ui.setRoute('Waiting');
-    ui.hideBanner();
     ui.setControlsEnabled(false);
     ui.setFileTargets([]);
 
@@ -193,7 +191,8 @@ const sessions = new Map();
 
   function handleSignalingStatus(status) {
     signalingState = status.state;
-    signalingDetail = status.reason || status.message || signalingDetail;
+    signalingDetail = status.reason || status.message || '';
+    signalingAttempt = Number(status.attempt) || 0;
 
     switch (status.state) {
       case 'connecting':
@@ -202,19 +201,11 @@ const sessions = new Map();
 
       case 'connected':
         ui.setSignalStatus('connected', 'WebSocket open');
-        ui.hideBanner();
         break;
 
-      case 'reconnecting': {
-        const seconds = Math.max(1, Math.round((status.delay || 0) / 1000));
-        const reason = status.reason || 'Signaling offline';
-        ui.setSignalStatus('reconnecting', reason);
-        ui.showBanner(
-          `${reason}. Established peer links keep working. ` +
-            `Reconnecting in ~${seconds}s (attempt ${String(status.attempt)})…`
-        );
+      case 'reconnecting':
+        ui.setSignalStatus('reconnecting', signalingDetail || 'Signaling offline');
         break;
-      }
 
       case 'disconnected':
         ui.setSignalStatus('disconnected', 'No signaling connection.');
@@ -222,7 +213,6 @@ const sessions = new Map();
 
       case 'error':
         ui.setSignalStatus('error', status.message || 'A signaling error occurred.');
-        ui.showBanner('Signaling reported an error: ' + (status.message || '—'));
         break;
 
       default:
@@ -235,7 +225,6 @@ const sessions = new Map();
   function handleJoined(message) {
     myPeerId = Number(message.peerId);
     roomLimit = Number(message.limit) || 0;
-    ui.hideBanner();
 
     if (Array.isArray(message.peers)) {
       for (const peer of message.peers) {
@@ -281,7 +270,6 @@ const sessions = new Map();
     signalingState = 'closed';
     destroyAllSessions();
 
-    ui.hideBanner();
     ui.setStatus('full', `This room already has ${roomLimit} participants.`);
     ui.setPeers(0, 0, roomLimit);
     ui.setFileTargets([]);
@@ -590,35 +578,51 @@ const sessions = new Map();
         waiting > 0 ? `${waiting} connecting` : null,
         routeSummaryFrom(open),
       ].filter(Boolean);
-      ui.setPeerStatus('connected', parts.join(' · '));
+      setPeerStatus('connected', parts.join(' · '));
       return;
     }
 
     if (entries.length === 0) {
       if (!myPeerId) {
-        ui.setPeerStatus('waiting', 'Awaiting participants');
+        setPeerStatus('waiting', 'Awaiting participants');
         return;
       }
       if (signalingState === 'connecting') {
-        ui.setPeerStatus('waiting', 'Awaiting participants');
+        setPeerStatus('waiting', 'Awaiting participants');
         return;
       }
       const capacity = roomLimit ? ` · ${myPeerId}/${roomLimit}` : '';
-      ui.setPeerStatus('waiting', 'Waiting in room' + capacity);
+      setPeerStatus('waiting', 'Waiting in room' + capacity);
       return;
     }
 
     const peerStates = entries.map((e) => e.state);
     if (peerStates.includes('failed')) {
-      ui.setPeerStatus('failed', 'A peer link failed; renegotiation is in progress.');
+      setPeerStatus('failed', 'A peer link failed; renegotiation is in progress.');
       return;
     }
     if (peerStates.includes('reconnecting') || peerStates.includes('disconnected')) {
-      ui.setPeerStatus('reconnecting', 'A peer link dropped; ICE recovery is in progress.');
+      setPeerStatus('reconnecting', 'A peer link dropped; ICE recovery is in progress.');
       return;
     }
-    ui.setPeerStatus('connecting', 'Negotiating peer links…');
+    setPeerStatus('connecting', 'Negotiating peer links…');
     return;
+  }
+
+  function setPeerStatus(state, detail) {
+    let signalingNotice = '';
+    if (signalingState === 'reconnecting') {
+      const attempt = signalingAttempt ? ` (attempt ${signalingAttempt})` : '';
+      const reason = signalingDetail ? `: ${signalingDetail}` : '';
+      signalingNotice = `Signaling reconnecting${attempt}${reason}`;
+    } else if (signalingState === 'error') {
+      signalingNotice = `Signaling error${signalingDetail ? `: ${signalingDetail}` : ''}`;
+    }
+
+    ui.setPeerStatus(
+      state,
+      signalingNotice ? `${signalingNotice} · ${detail}` : detail
+    );
   }
 
   function routeSummaryFrom(open) {

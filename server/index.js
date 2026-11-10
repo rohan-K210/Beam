@@ -28,6 +28,21 @@ const PORT = Number.parseInt(process.env.PORT || '8080', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 const CLIENT_DIR = path.resolve(__dirname, '..', 'client');
 
+// External TURN configuration. Leave unset for STUN-only operation.
+const TURN_ENABLED =
+  process.env.TURN_URLS && String(process.env.TURN_URLS).trim().length > 0;
+
+/**
+ * Optional managed-TURN credentials.
+ *
+ * Use these for long-term credential providers. For short-lived credential
+ * providers, set TURN_API_SECRET instead and implement the provider-specific
+ * credential refresh in the endpoint below.
+ */
+const TURN_USERNAME = process.env.TURN_USERNAME;
+const TURN_CREDENTIAL = process.env.TURN_CREDENTIAL;
+const TURN_API_SECRET = process.env.TURN_API_SECRET;
+
 /** Small meshes stay manageable; raise deliberately for larger demos. */
 const MAX_PEERS_PER_ROOM = clamp(
   Number.parseInt(process.env.MAX_PEERS_PER_ROOM || '4', 10) || 4,
@@ -123,6 +138,8 @@ const wss = new WebSocketServer({ server, maxPayload: 256 * 1024 });
 // WebSocket signaling
 // ---------------------------------------------------------------------------
 
+const TURN_CREDENTIAL_CACHE = new Map();
+
 wss.on('connection', (ws) => {
   ws.isAlive = true;
   ws.member = null;
@@ -156,6 +173,137 @@ wss.on('connection', (ws) => {
   ws.on('close', () => handleSocketClose(ws));
   ws.on('error', (err) => log(`socket error: ${err.message}`));
 });
+
+// ---------------------------------------------------------------------------
+// Optional managed-TURN credential endpoint
+// ---------------------------------------------------------------------------
+
+/**
+ * The client asks this endpoint before creating its RTCPeerConnection when the
+ * deployment advertises an external TURN provider.
+ *
+ * This endpoint is intentionally simple and provider-agnostic: it returns only
+ * the fields a browser needs for ICE. It never exposes the provider API secret.
+ *
+ * Provider integration notes:
+ *  - Google Cloud TURN (or another REST-credential provider) usually requires an
+ *    API secret on the server and returns time-limited username/credential pairs.
+ *  - Coturn long-term credential mechanisms can be fed from TURN_USERNAME /
+ *    TURN_CREDENTIAL if your provider issues static long-term credentials.
+ *  - If the provider requires a custom request format, implement it here rather
+ *    than inventing a credential shape in the client.
+ */
+server.on('request', (req, res) => {
+  if (req.method !== 'GET' || req.url !== '/turn-credentials') return;
+
+  if (!TURN_ENABLED) {
+    res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'TURN is not configured for this deployment.' }));
+    return;
+  }
+
+  // Keep the endpoint cheap and defensive. Rate limiting is intentionally left
+  // as an operational concern for the hosting platform in front of this service
+  // for now; add platform-level throttling or middleware before exposing it in
+  // production if your provider issues short-lived credentials on demand.
+  try {
+    const now = Date.now();
+    let username, credential, urls, ttl;          try {
+      if (TURN_API_SECRET) {
+        // Short-lived credentials: mint or fetch them from the provider.
+        const providerCredentials = getTurnCredentialsSync(now);
+        username = providerCredentials.username;
+        credential = providerCredentials.credential;
+        ttl = providerCredentials.ttl || 0;
+      } else if (TURN_USERNAME && TURN_CREDENTIAL) {
+        username = TURN_USERNAME;
+        credential = TURN_CREDENTIAL;
+        ttl = 86_400;
+      } else {
+        res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(
+          JSON.stringify({
+            error:
+              'TURN_URLS is configured, but neither static credentials nor TURN_API_SECRET was provided.',
+          })
+        );
+        return;
+      }
+
+      // Cache short-lived credentials only while they are still valid.
+      if (ttl > 0) {
+        const expiresAt = now + ttl * 1000;
+        TURN_CREDENTIAL_CACHE.set('current', { username, credential, urls, ttl, expiresAt });
+        const cached = TURN_CREDENTIAL_CACHE.get('current');
+        if (cached && cached.expiresAt <= now) {
+          TURN_CREDENTIAL_CACHE.delete('current');
+        }
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      res.end(
+        JSON.stringify({
+          urls: stringArray(process.env.TURN_URLS),
+          username,
+          credential,
+          ttl: ttl > 0 ? ttl : undefined,
+        })
+      );
+      return;
+    }
+    catch (err) {
+      log('turn-credentials error: ' + err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'TURN credential generation failed.' }));
+    }
+  } catch (err) {
+    log(`turn-credentials error: ${err.message}`);
+    res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'TURN credential generation failed.' }));
+  }
+});
+
+/**
+ * Provider-specific credential minting hook.
+ *
+ * Implement the provider's documented credential request here. The placeholder
+ * below is deliberately generic: it returns long-term style credentials from the
+ * server env so the client path stays unchanged while the provider is integrated.
+ *
+ * Do not hardcode any provider API key here; read it from TURN_API_SECRET or a
+ * comparable server-side secret.
+ */
+function getTurnCredentialsSync(now) {
+  // TODO: replace with the selected provider's credential API once one is chosen.
+  // Example shapes:
+  //   - a time-limited username/credential pair returned by a REST call using
+  //     TURN_API_SECRET as the authenticated secret;
+  //   - a Coturn REST API response if the provider exposes one;
+  //   - a provider SDK call that returns `username`, `credential`, and an expiry.
+  if (TURN_USERNAME && TURN_CREDENTIAL) {
+    return {
+      username: TURN_USERNAME,
+      credential: TURN_CREDENTIAL,
+      ttl: 86_400,
+    };
+  }
+
+  throw new Error(
+    'TURN_API_SECRET is set, but long-term TURN_USERNAME / TURN_CREDENTIAL are missing.'
+  );
+}
+
+function stringArray(raw) {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
 
 function handleJoin(ws, message) {
   if (ws.member) return; // one room per socket
@@ -394,11 +542,47 @@ process.on('SIGTERM', shutdown);
 // ---------------------------------------------------------------------------
 
 server.listen(PORT, HOST, () => {
-  log(`client      http://localhost:${PORT}`);
-  log(`signaling   ws://localhost:${PORT}`);
+  const proto = process.env.NODE_ENV === 'production' || isHttpsBehindProxy()
+    ? 'https'
+    : 'http';
+  // Log the address the deployment should use, without assuming localhost.
+  log(`client      ${proto}://0.0.0.0:${PORT}`);
+  log(`signaling   ${proto === 'https' ? 'wss' : 'ws'}://0.0.0.0:${PORT}`);
   log(`listening   ${HOST}:${PORT}`);
   log(`room limit  ${MAX_PEERS_PER_ROOM} peers`);
+  log(
+    TURN_ENABLED
+      ? `turn        configured (${stringArray(process.env.TURN_URLS).length} URL(s))`
+      : 'turn        not configured; STUN only'
+  );
 });
+
+/**
+ * Best-effort inference of whether the deployment is served over TLS.
+ *
+ * Render terminates TLS at its edge, so the Node process itself sees HTTP. Do
+ * not rely on this to decide signaling scheme; the client derives its signaling
+ * URL from the page URL instead. This is only used for startup log labels.
+ */
+function isHttpsBehindProxy() {
+  // Render and similar platforms often set standard proxy-forwarded env vars.
+  if (
+    process.env.NODE_ENV === 'production' &&
+    (process.env.RENDER_internal__https !== undefined ||
+      process.env.HTTPS === 'on' ||
+      process.env.Forwarded ||
+      process.env.XForwardedProto)
+  ) {
+    return true;
+  }
+
+  // Fallback: treat the common production hostname hint as a cue, not a rule.
+  if (process.env.HOSTNAME && /\.render\.app$/.test(process.env.HOSTNAME)) {
+    return true;
+  }
+
+  return false;
+}
 
 function log(message) {
   console.log(`[${new Date().toISOString()}] ${message}`);

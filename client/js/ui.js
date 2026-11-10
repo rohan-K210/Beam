@@ -21,8 +21,6 @@ window.ChatUI = (function () {
   const factRoute = $('fact-route');
   const factSignaling = $('fact-signaling');
   const factIce = $('fact-ice');
-  const bannerEl = $('signal-banner');
-  const bannerText = $('signal-banner-text');
   const messagesEl = $('messages');
   const transfersEl = $('transfers');
   const emptyState = $('empty-state');
@@ -101,15 +99,6 @@ window.ChatUI = (function () {
 
   function setRoute(text) {
     factRoute.textContent = text || 'Waiting';
-  }
-
-  function showBanner(text) {
-    bannerText.textContent = text;
-    bannerEl.hidden = false;
-  }
-
-  function hideBanner() {
-    bannerEl.hidden = true;
   }
 
   function setCopyButtonLabel(text) {
@@ -418,8 +407,6 @@ window.ChatUI = (function () {
     setIcePolicy,
     setPeers,
     setRoute,
-    showBanner,
-    hideBanner,
     setCopyButtonLabel,
     showJoinForm,
     hideJoinForm,
