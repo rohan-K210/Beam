@@ -3,14 +3,14 @@
 #   cp .env.example .env
 #   docker compose up -d
 #
-# The defaults (127.0.0.1, chat/chatpass, relay ports 49160-49200) match
-# client/js/config.js and work for tabs on the same machine.
+# The development credentials (chat/chatpass, relay ports 49160-49200) match
+# the localhost-only TURN configuration in client/js/config.js.
 #
 # For peers on other networks:
 #   - set TURN_EXTERNAL_IP in .env to your public IPv4 address
 #   - allow TCP/UDP 3478 and UDP 49160-49200 through the firewall
-#   - change the TURN URL in client/js/config.js to turn:YOUR_IP:3478
-#   - use the same username/password in both places
+#   - use a local URL override such as ?turnUrls=turn%3AYOUR_IP%3A3478
+#     while serving the client on localhost; URL overrides use chat/chatpass.
 
 services:
   coturn:

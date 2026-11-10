@@ -12,8 +12,8 @@ Docker Compose.
 ## What is in this repo
 
 - `client/` - static frontend (HTML, CSS, JS). The signaling server serves it.
-- `server/index.js` - signaling + static serving only. Photonics/WebRTC lives in
-  the browser.
+- `server/index.js` - signaling, static serving, and the TURN credential route.
+- `server/turn-credentials.js` - provider credential validation and rate limiting.
 
 ### Features
 
@@ -39,39 +39,67 @@ enter a shared room name, and you should be able to chat and send files.
 
 ### Local development with coturn
 
-The default local setup uses coturn via Docker Compose. The server reads its TURN
-settings from a `.env` file (see `.env.example`). The client builds a coturn TURN
-candidate URL from the page's own hostname/port only during local development, so
-coturn typically needs to run on the same machine the browser is on.
+The included Docker Compose service starts coturn on port 3478. On a page served
+from `localhost`, Beam uses `turn:localhost:3478` and the development-only
+`chat` / `chatpass` credentials. The local TURN server is never inferred for a
+non-local hostname.
 
-For TURN testing, set `?relay=1` in the URL so ICE is forced to use relay
-candidates instead of trying host/srflx candidates first.
+To try alternate TURN URLs locally, pass URL-encoded `turnUrls` parameters, for
+example:
 
-### Production / external TURN provider
+```text
+http://localhost:8080/?room=demo&turnUrls=turn%3A127.0.0.1%3A3478%3Ftransport%3Dudp
+```
 
-In production, the server no longer synthesizes `turn:<host>:3478` from the
-page host. Instead:
+Overrides are accepted only on localhost and use the local development
+credentials. Do not put account keys, TURN passwords, or other permanent
+credentials in URLs; URLs can be retained in browser history and logs. Custom
+local coturn credentials should be supplied through the server environment:
+set `TURN_USER` / `TURN_PASS` for Docker Compose and matching
+`TURN_URLS=turn:localhost:3478`, `TURN_USERNAME`, and `TURN_CREDENTIAL` values
+for the Node credential endpoint.
 
-- The client always includes the Google STUN servers.
-- If the deployment has configured TURN, the server can expose a `/turn-credentials`
-  endpoint. The client fetches credentials from there once per page load and never
-  embeds long-term TURN credentials in the page HTML/JS.
-- A TURN provider should issue short-lived credentials where possible. The server
-  helper `getTurnCredentialsSync` is where that minting lives; for a long-term
-  credential provider you can set `TURN_USERNAME` and `TURN_CREDENTIAL` in the
-  server's environment and let the endpoint return those values. The client treats
-  the response as opaque credentials (urls + username + credential) and sends them
-  straight to the WebRTC layer.
+### Production with Metered TURN
 
-### What to put in the env
+1. Create a TURN credential in Metered and copy its app name and TURN credential
+   API key from the dashboard.
+2. Set `METERED_APP_NAME` and `METERED_API_KEY` in the Node service's environment
+   (or its secret manager). Do not put the key in frontend JavaScript, shareable
+   browser URLs, or committed files. `.env.example` contains blank placeholders only.
+3. Serve Beam over HTTPS so the same-origin `/turn-credentials` request is
+   available securely.
 
-See `.env.example`. Relevant keys:
+Before any peer connection is created, the browser requests
+`/turn-credentials`. The backend calls Metered's
+[TURN credential API](https://www.metered.ca/docs/turn-rest-api/get-credential/)
+using the environment-only API key, validates the response, and returns only
+TURN URLs and ICE credentials. It does not log the key or credentials. Metered
+may return UDP, TCP, and TLS-capable (`turns:`) URLs; Beam retains the TURN
+transports and continues to include Google's STUN servers.
 
-- `PORT` - server listen port (default 8080).
-- `HOST` - interface to bind (default `0.0.0.0`). This is important for Render,
-  which expects the process to listen on the port it assigns and on `0.0.0.0`.
-- TURN keys - `TURN_URLS`, `TURN_USERNAME`, `TURN_CREDENTIAL`, and optionally
-  `TURN_API_SECRET` for a provider-specific short-lived credential path.
+Metered's credential API response does not document an expiry field in its
+standard URL list. If the provider supplies a positive `ttl`, `expiresIn`, or
+`credentialTtl` value, Beam validates it and refreshes the credentials before
+expiry. Otherwise configure credential rotation in Metered according to its
+[rotation guide](https://www.metered.ca/docs/turnserver-guides/rotating-turn-credentials/).
+Do not treat an API key as an expiring ICE credential.
+
+For manual TURN setups, set `TURN_URLS`, `TURN_USERNAME`, and `TURN_CREDENTIAL`
+on the server. These are returned via the same endpoint; use short-lived
+credentials where your provider supports them. Leave all TURN variables blank
+for explicit STUN-only operation. The endpoint is limited to 30 requests per
+minute per source IP and returns `Cache-Control: no-store`.
+
+To force relay-only ICE, append `&relay=1` to the room URL. If TURN credentials
+are unavailable, Beam reports that state and does not create peer connections
+with an unusable relay-only configuration. With the default `all` policy, it
+falls back to Google STUN and clearly reports that TURN is unavailable.
+
+### Server environment
+
+See `.env.example`. `PORT` defaults to 8080 and `HOST` to `0.0.0.0`. Production
+TURN credentials belong in the hosting provider's environment/secrets manager;
+never commit a real key or password.
 
 ## Hosting notes
 
@@ -86,7 +114,10 @@ See `.env.example`. Relevant keys:
 
 ## Security posture
 
-- The client does not ship permanent TURN credentials in the page by default.
+- The Metered API key stays on the server and is not included in frontend assets,
+  shareable browser URLs, or client responses. TURN credentials are necessarily
+  delivered to the browser for ICE; use provider-managed temporary credentials and
+  rotation.
 - Client IDs are server-assigned; the browser does not choose its own identity.
 - WebSocket messages are capped at 256 KB.
 - Room IDs and client IDs are validated before use.
@@ -100,10 +131,10 @@ See `.env.example`. Relevant keys:
 - `PROJECT_REPORT.md` - an auto-generated structural summary of the repo.
 - `.env.example` - the env layout to copy into `.env` for local use.
 
-## Backlog / decisions
+## TURN credential handling
 
-- The TURN credential endpoint is intentionally generic. The actual minting logic
-  is the part that depends on which provider you use, so it is a small server-side
-  helper rather than a full integration.
-- Local coturn remains the default local path; production should prefer an external
-  TURN provider and short-lived credentials rather than long-term static ones.
+- Managed Metered credentials are requested server-side from the documented API.
+- Static `TURN_USERNAME` / `TURN_CREDENTIAL` values are supported for manually
+  configured providers, but are returned to browsers and should not be used as
+  permanent production secrets.
+- Local coturn credentials are development-only.

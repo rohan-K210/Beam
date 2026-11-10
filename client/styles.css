@@ -218,8 +218,9 @@ select {
   animation: pulse 1.4s ease-in-out infinite;
 }
 
-.status[data-state="failed"],
-.status[data-state="disconnected"],
+.status[data-state="failed"] .status-dot,
+.status[data-state="disconnected"] .status-dot,
+.status[data-state="error"] .status-dot,
 .status[data-state="full"] .status-dot {
   background: var(--red);
   box-shadow: 0 0 0 3px rgba(217, 48, 37, 0.2);

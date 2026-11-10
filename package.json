@@ -5,7 +5,8 @@
   "description": "Peer-to-peer group chat and file transfer over WebRTC DataChannels with a minimal Node.js signaling server.",
   "main": "server/index.js",
   "scripts": {
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"

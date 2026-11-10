@@ -12,6 +12,7 @@ const sessions = new Map();
   'use strict';
 
   const cfg = window.CHAT_CONFIG || {};
+  stripTurnCredentialsFromUrl();
   const initialParams = new URLSearchParams(window.location.search);
   const ui = window.ChatUI;
   let room = initialParams.get('room') || '';
@@ -19,11 +20,9 @@ const sessions = new Map();
   const fileConfig = cfg.fileTransfer || {};
   const icePolicy =
     initialParams.get('relay') === '1' ? 'relay' : cfg.iceTransportPolicy || 'all';
-
-  const peerConfiguration = {
-    iceServers: Array.isArray(cfg.iceServers) ? cfg.iceServers : [],
-    iceTransportPolicy: icePolicy,
-  };
+  let iceConfiguration = null;
+  let peerConfiguration = null;
+  let turnRefreshTimer = null;
 
   const signalingUrl =
     initialParams.get('signal') || cfg.signalingUrl || 'ws://localhost:8080';
@@ -44,6 +43,46 @@ const sessions = new Map();
       .trim()
       .replace(/\s+/g, ' ')
       .slice(0, 64);
+  }
+
+  function stripTurnCredentialsFromUrl() {
+    const url = new URL(window.location.href);
+    let changed = false;
+    const secretParameterNames = new Set([
+      'turnusername',
+      'turncredential',
+      'turnpassword',
+      'u',
+      'p',
+      'username',
+      'password',
+      'credential',
+    ]);
+    for (const key of [...url.searchParams.keys()]) {
+      if (secretParameterNames.has(key.toLowerCase())) {
+        url.searchParams.delete(key);
+        changed = true;
+      }
+    }
+
+    const overrides = url.searchParams.getAll('turnUrls');
+    if (
+      overrides.some((override) =>
+        override.split(',').some((turnUrl) => {
+          const queryAt = turnUrl.indexOf('?');
+          if (queryAt < 0) return false;
+          const query = new URLSearchParams(turnUrl.slice(queryAt + 1));
+          return [...query.keys()].some((key) =>
+            ['u', 'p', 'username', 'password', 'credential'].includes(key.toLowerCase())
+          );
+        })
+      )
+    ) {
+      url.searchParams.delete('turnUrls');
+      changed = true;
+    }
+
+    if (changed) window.history.replaceState(null, '', url);
   }
 
   function updateRoomInUrl() {
@@ -101,6 +140,7 @@ const sessions = new Map();
 
   const STATUS_LABELS = {
     connecting: 'Connecting to server',
+    error: 'Connection configuration error',
     waiting: 'Waiting for peers',
     negotiating: 'Negotiating',
     connected: 'Connected',
@@ -121,20 +161,41 @@ const sessions = new Map();
 
   ui.setSignalingUrl(signalingUrl);
   ui.setIcePolicy(icePolicy);
-  ui.onJoinSubmit(joinRoom);
   ui.onSend(handleSendText);
   ui.onFileSelected(handleFileSelected);
   document.getElementById('copy-link').addEventListener('click', copyInviteLink);
 
-  if (room) {
-    joinRoom(room);
-  } else {
-    ui.setRoom('');
-    ui.setControlsEnabled(false);
-    ui.setPeers(0, 0, 0);
-    ui.setFileTargets([]);
-    ui.setStatus('waiting', 'Choose a room to begin');
-    ui.showJoinForm('');
+  ui.setStatus('connecting', 'Loading ICE configuration…');
+  initializeIceConfiguration();
+
+  async function initializeIceConfiguration() {
+    try {
+      iceConfiguration = await cfg.resolveIceConfiguration();
+    } catch (error) {
+      iceConfiguration = {
+        iceServers: Array.isArray(cfg.iceServers) ? cfg.iceServers : [],
+        turnConfigured: false,
+        warning: `${error.message || 'ICE configuration could not be loaded.'} Using STUN only.`,
+      };
+    }
+
+    peerConfiguration = {
+      iceServers: iceConfiguration.iceServers,
+      iceTransportPolicy: icePolicy,
+    };
+    scheduleTurnRefresh();
+    ui.onJoinSubmit(joinRoom);
+
+    if (room) {
+      joinRoom(room);
+    } else {
+      ui.setRoom('');
+      ui.setControlsEnabled(false);
+      ui.setPeers(0, 0, 0);
+      ui.setFileTargets([]);
+      ui.setStatus('waiting', appendIceNotice('Choose a room to begin'));
+      ui.showJoinForm('');
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -291,6 +352,16 @@ const sessions = new Map();
 
   function ensureSession(remotePeerId, remoteClientId, announce) {
     if (!Number.isInteger(remotePeerId)) return null;
+    if (!peerConfiguration) {
+      throw new Error('ICE configuration must be ready before creating a peer connection.');
+    }
+    if (icePolicy === 'relay' && !iceConfiguration.turnConfigured) {
+      ui.setPeerStatus(
+        'error',
+        appendIceNotice('Relay-only mode requires a configured TURN server.')
+      );
+      return null;
+    }
 
     const byId = sessions.get(remotePeerId);
     if (byId) {
@@ -610,6 +681,14 @@ const sessions = new Map();
   }
 
   function setPeerStatus(state, detail) {
+    if (icePolicy === 'relay' && !iceConfiguration.turnConfigured) {
+      ui.setPeerStatus(
+        'error',
+        appendIceNotice('Relay-only mode requires a configured TURN server.')
+      );
+      return;
+    }
+
     let signalingNotice = '';
     if (signalingState === 'reconnecting') {
       const attempt = signalingAttempt ? ` (attempt ${signalingAttempt})` : '';
@@ -619,10 +698,42 @@ const sessions = new Map();
       signalingNotice = `Signaling error${signalingDetail ? `: ${signalingDetail}` : ''}`;
     }
 
-    ui.setPeerStatus(
-      state,
-      signalingNotice ? `${signalingNotice} · ${detail}` : detail
+    const statusDetail = signalingNotice ? `${signalingNotice} · ${detail}` : detail;
+    ui.setPeerStatus(state, appendIceNotice(statusDetail));
+  }
+
+  function appendIceNotice(detail) {
+    const warning = iceConfiguration && iceConfiguration.warning;
+    return warning ? `${detail} · ${warning}` : detail;
+  }
+
+  function scheduleTurnRefresh() {
+    clearTimeout(turnRefreshTimer);
+    if (!iceConfiguration || !iceConfiguration.ttl) return;
+
+    const delay = Math.min(
+      2_147_000_000,
+      Math.max(1_000, Math.floor(iceConfiguration.ttl * 800))
     );
+    turnRefreshTimer = setTimeout(async () => {
+      try {
+        iceConfiguration = await cfg.refreshTurnConfiguration();
+      } catch (error) {
+        iceConfiguration = {
+          iceServers: Array.isArray(cfg.iceServers) ? cfg.iceServers : [],
+          turnConfigured: false,
+          warning: `${error.message || 'TURN credentials could not be refreshed.'} Using Google STUN only.`,
+        };
+      }
+
+      peerConfiguration = {
+        iceServers: iceConfiguration.iceServers,
+        iceTransportPolicy: icePolicy,
+      };
+      if (roomActive) refreshStatus();
+      else if (!room) ui.setStatus('waiting', appendIceNotice('Choose a room to begin'));
+      scheduleTurnRefresh();
+    }, delay);
   }
 
   function routeSummaryFrom(open) {
@@ -784,6 +895,7 @@ const sessions = new Map();
 
   window.addEventListener('beforeunload', () => {
     roomActive = false;
+    clearTimeout(turnRefreshTimer);
     destroyAllSessions();
     if (signaling) signaling.stop();
   });

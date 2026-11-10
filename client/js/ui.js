@@ -37,6 +37,7 @@ window.ChatUI = (function () {
 
   const STATUS_LABELS = {
     connecting: 'Connecting to server',
+    error: 'Connection configuration error',
     waiting: 'Waiting for peers',
     negotiating: 'Negotiating',
     connected: 'Connected',
