@@ -19,7 +19,7 @@ Docker Compose.
 
 - WebRTC data channels for chat and file transfer.
 - Browser-to-browser file transfer with SHA-256 verification and progress UI.
-- Room-based sessions (client IDs are server-assigned).
+- Room-based sessions with server-assigned peer IDs and browser-generated reconnect IDs.
 - Optional TURN support and Google STUN by default.
 
 ## Local development
@@ -114,6 +114,7 @@ never commit a real key or password.
 
 ## Security posture
 
+- Rooms are public to anyone who knows or guesses the room name; do not use room names as access control or treat a room as private.
 - The Metered API key stays on the server and is not included in frontend assets,
   shareable browser URLs, or client responses. TURN credentials are necessarily
   delivered to the browser for ICE; use provider-managed temporary credentials and
