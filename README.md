@@ -22,6 +22,33 @@ Docker Compose.
 - Room-based sessions with server-assigned peer IDs and browser-generated reconnect IDs.
 - Optional TURN support and Google STUN by default.
 
+## Architecture
+
+The signaling server helps peers discover and negotiate a connection. Once the
+WebRTC data channel is established, chat messages and file bytes travel directly
+between browsers when possible. If the network requires relaying, ICE can use a
+configured TURN server instead.
+
+```mermaid
+flowchart LR
+    A["Browser A<br/>Beam client"] <-->|"WebSocket signaling<br/>SDP / ICE exchange"| S["Node.js signaling server"]
+    B["Browser B<br/>Beam client"] <-->|"WebSocket signaling<br/>SDP / ICE exchange"| S
+    A <-->|"WebRTC data channel<br/>chat + file transfer"| B
+    A -. "ICE connectivity checks" .-> STUN["STUN service"]
+    B -. "ICE connectivity checks" .-> STUN
+    A -. "Relay path when needed" .-> TURN["TURN server"]
+    TURN -. "Relayed WebRTC traffic" .-> B
+    S -->|"Server-side credential request"| M["Metered TURN API"]
+```
+
+**Connection flow**
+
+1. Both browsers join the same room through the WebSocket signaling server.
+2. The server relays the WebRTC offer, answer, and ICE candidate messages.
+3. The browsers attempt a direct peer-to-peer connection using ICE.
+4. If direct connectivity is not possible and TURN is configured, media/data traffic can be relayed.
+5. Once connected, chat and file transfer use the WebRTC data channel; file integrity is checked with SHA-256.
+
 ## Local development
 
 From the project root:
