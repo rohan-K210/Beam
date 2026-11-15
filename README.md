@@ -9,6 +9,12 @@ This project ships a light UI (Space Grotesk, warm paper palette) and is
 intended to be easy to host on a small Node.js platform or run locally with
 Docker Compose.
 
+## Project preview
+
+The live application is available at [beam-awcv.onrender.com](https://beam-awcv.onrender.com/).
+A clean screenshot gallery and walkthrough recording will be added after a fresh
+two-peer capture is available.
+
 ## What is in this repo
 
 - `client/` - static frontend (HTML, CSS, JS). The signaling server serves it.
@@ -61,6 +67,16 @@ npm start
 That starts the signaling server on `http://localhost:8080`, which also serves
 the client directory as static files. Open the same URL in two tabs/browsers,
 enter a shared room name, and you should be able to chat and send files.
+
+## Demo
+
+Open the [deployed Beam application](https://beam-awcv.onrender.com/) in two
+browser tabs or separate browsers, join the same room, exchange messages, and
+transfer a small test file.
+
+For a reliable portfolio capture, show both peers connected, a two-way chat
+exchange, and a completed file transfer. Avoid exposing peer identifiers,
+personal file names, or transient reconnect notifications in published images.
 
 ## TURN / WebRTC connectivity
 
